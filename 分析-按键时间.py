@@ -592,7 +592,21 @@ def _block_boundary(tots, block, band, ref_last, smooth):
     return k, R, nb
 
 
-def stable_pools(path, block=150, band=1.10, ref_last=5, smooth=3, min_blocks=8):
+# 稳定期带宽（**按码长**；口径单一来源 —— 2026-10-11 用户决策「2 键的相对离散更大, 直接取 1.15 合理」）:
+#   带宽要配的是「块中位的相对噪声 σ_b/水平」（只在平台段内测, 去练习段污染）:
+#     4 键 3.3% / 3 键 5.1% / 2 键 4.6% ⇒ 同一个 10% 在三档上分别是 3.04σ / 1.97σ / 2.20σ。
+#   2 键平台块中位实测跨度 58.0–70.9ms（SD 3.69）, 而 1.10 的上沿 61.9×1.10 = 68.1ms 落在
+#   平台自身噪声分布**内部**（1.67 SD）⇒ 某一块偶然落在平台高侧就被判「仍在练习」,
+#   稳定池被压到 952/2752（7/19 块, 命中率 34.6%, 留出 190, T₂ 偏差 SE 1.94ms）。
+#   1.15 的上沿 71.2ms 清过整个平台跨度 ⇒ 边界回块[0]、稳定池 2752、留出 550、SE →1.14ms。
+#   该值 = 「噪声归一化」band = 1+3σ_b/水平 的 2 键解（该式对 4 键给出 1.100 = 现行值、
+#   对 3 键 1.153）；**只放宽 2 键**，因为 3 键前 7 块中位 213–226ms vs R=193 是它 09-19
+#   补采时的**真练习段**（不是噪声）, 放宽会把练习段拉进训练池、破坏 T₃ 稳定期语义。
+#   证据: 实验/实验-2键充分性.py（边界敏感度/趋势/σ_b 表）。
+BAND_BY_LEN = {4: 1.10, 3: 1.10, 2: 1.15}
+
+
+def stable_pools(path, block=150, band=None, ref_last=5, smooth=3, min_blocks=8):
     """稳定期标准划分 — 分码长序号块口径 (2026-09-19 用户决策: 三种码长入队时间不同、
     练习轨迹各自独立 (实验-分码长练习趋势.py: 2键全程无趋势/3键单 session), 稳定期按码长
     分别计算各自截取; 旧"4键边界+同截归属"对 2键恰巧等价——2键入队晚于 4键边界且自身无
@@ -606,16 +620,30 @@ def stable_pools(path, block=150, band=1.10, ref_last=5, smooth=3, min_blocks=8)
                  3 键入训 — L==3 特征只在 3 键样本上可辨识, 且这正是 T₃ 偏差的修法)
       train4/test4/train2/test2/train3/test3  各码长 train/test (test3 现为 T₃ 留出指标)
       deploy4/deploy2/deploy3  各码长稳定期全量 (部署 = 当前状态语义)
-      desc  划分说明 (含各码长边界/R/告警)
+      desc  划分说明 (含各码长边界/R/带宽容/告警)
     依据: 角点 S(∅,a,b,∅) 原为零样本外推 (实测偏差 −6.0±0.8ms), 2 键参与训练使其
-    内插化; 模型结构共享使稀疏覆盖 (n=1) 也被整体统计强度正则化。"""
+    内插化; 模型结构共享使稀疏覆盖 (n=1) 也被整体统计强度正则化。
+
+    **2026-10-11 用户决策：带宽改为按码长（BAND_BY_LEN），2 键单独取 1.15**。理由 = 带宽该配
+    的是「块中位的相对噪声 σ_b/水平」（只在平台段内测, 去练习段污染）: 4 键 3.3% / 3 键 5.1% /
+    2 键 4.6% ⇒ 同一个 10% 带宽在三档上分别是 3.04σ / 1.97σ / **2.20σ**。2 键平台块中位实测
+    跨度 58.0–70.9ms（SD 3.69），而 1.10 的上沿 61.9×1.10 = 68.1ms **落在平台自身噪声分布
+    内部（1.67 SD）** ⇒ 只要某一块偶然落在平台高侧就被判「仍在练习」，稳定池被压到 952/2752
+    （7/19 块、命中率 34.6%、留出仅 190、T₂ 偏差 SE 1.94ms）。1.15 的上沿 71.2ms 清过整个
+    平台跨度 ⇒ 边界回块[0]、稳定池 2752、留出 550、SE →1.14ms（零采集）。该取值等价于
+    "噪声归一化" band = 1+3σ_b/水平 的 2 键解（该式对 4 键给出 1.100 = 现行值、3 键 1.153）。
+    **只放宽 2 键**：3 键前 7 块中位 213–226ms vs R=193 是它 09-19 补采时的**真练习段**（不是
+    噪声），放宽会把练习段拉进训练池、破坏 T₃ 稳定期语义（T₃ 是当前唯一欠账指标）。
+    传标量 `band=` 则三码长同值（供对照/复现旧口径）。"""
+    bands = BAND_BY_LEN if band is None else ({n: band for n in (4, 2, 3)}
+                                              if not isinstance(band, dict) else band)
     rows = load_trials(path)
     idx_n = {n: [i for i, (c, _) in enumerate(rows) if len(c) == n] for n in (4, 2, 3)}
     tcol = {4: 2, 2: 0, 3: 1}          # 4键 d_d / 2键 b_d / 3键 c_d
     bounds, Rs, nbs = {}, {}, {}
     for n in (4, 2, 3):
         bounds[n], Rs[n], nbs[n] = _block_boundary(
-            [rows[i][1][tcol[n]] for i in idx_n[n]], block, band, ref_last, smooth)
+            [rows[i][1][tcol[n]] for i in idx_n[n]], block, bands[n], ref_last, smooth)
     stable, warn = {}, []
     for n in (4, 2, 3):
         k, R, nb = bounds[n], Rs[n], nbs[n]
@@ -645,7 +673,8 @@ def stable_pools(path, block=150, band=1.10, ref_last=5, smooth=3, min_blocks=8)
         if k >= nb:
             return f"{n}键 末块超带 稳定期空"
         tag = f"({nb - k}/{nb} 块)" if nb - k < min_blocks else ("(全程)" if k == 0 else "")
-        return f"{n}键 块[{k}] (ok行 #{idx_n[n][k * block] + 1}){tag} R={R:.0f}"
+        return (f"{n}键 块[{k}] (ok行 #{idx_n[n][k * block] + 1}){tag} R={R:.0f} "
+                f"band={bands[n]:.2f}")
 
     desc = (f"稳定期(分码长): {' | '.join(bd_txt(n) for n in (4, 2, 3))}  "
             f"(4键 {len(stable[4])} + 3键 {len(stable[3])} + 2键 {len(stable[2])} trial"
