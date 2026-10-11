@@ -1,7 +1,7 @@
-# 串击击键当量 — 条件击键当量建模
+# 更好的击键当量（better-keystroke-timing）— 条件击键当量建模
 
 > **命名说明（2026-09-29）**：项目目录已由 `击键测速` 改名为 **`串击击键当量`**（与姊妹项目 `并击击键当量` 对齐命名）。
-> **数据文件 `数据/击键测速数据.tsv` 与 GitHub 仓库名 `conditional-keystroke-timing` 未改名**，脚本与路径引用一律照旧。
+> **数据文件 `数据/击键测速数据.tsv` 与 GitHub 仓库名 `better-keystroke-timing` 未改名**，脚本与路径引用一律照旧。
 
 **条件击键当量**（Conditional Keystroke Equivalent，简称"当量"）：从个人打字测速数据中学习**前后键条件下**键位间的击键时间成本（ms，非物理距离），输出按键时间母表与 2/3/4 键总当量表（错误成本内含），用于输入法编码方案评估与键位优化。
 
@@ -962,7 +962,7 @@ python sync_github.py                   # 6. 同步代码+数据到 GitHub（--d
 
 ### 同步纪律与不可用通道（2026-09-22 定；分发策略与网络实测见上节）
 
-- **主仓库 `conditional-keystroke-timing`**：只放**代码 + 采集数据 + README**（13 文件 / 45 提交 / `.git` ~3.4MB）。同步脚本 `sync_github.py` **单通道**（清单 `SYNC_FILES`），同步副本 `D:/conditional-keystroke-timing`，远端用 **SSH**（本机 HTTPS 会被 reset）。
+- **主仓库 `better-keystroke-timing`**：只放**代码 + 采集数据 + README**（13 文件 / 45 提交 / `.git` ~3.4MB）。同步脚本 `sync_github.py` **单通道**（清单 `SYNC_FILES`），同步副本 `D:/better-keystroke-timing`，远端用 **SSH**（本机 HTTPS 会被 reset）。
 - **产物不入 git、不发布**：只在本机 `产物/`（OneDrive 规范源）保留**最新一份**，下游 calc-schema / chai 直接读该目录。仓库 `.gitignore` 保留 `产物/` 规则作安全网。
 - 规则：改完方案/脚本先跑 `python sync_github.py`（+ `--dry-run` 预览）；**同步后必须 `git ls-files` 核验实际入库**（.gitignore 曾静默吞文件）。
 - 不可用通道（2026-09-21 实测，勿重试）：GitHub Release 附件（gh 会把非 ASCII 附件名改成 `default.npz`；下载 `release-assets.githubusercontent.com` 1/2 次 TLS 超时、1 次静默截断）· 独立产物仓库（09-22 废弃）。
@@ -1007,4 +1007,4 @@ python sync_github.py                   # 6. 同步代码+数据到 GitHub（--d
 
 ## 许可证
 
-本项目采用[署名许可协议](./LICENSE)：可自由使用（含商业用途），**无需作者同意**；用于商业用途时须注明作者来源（zhanghaozhecn，仓库：https://github.com/zhanghaozhecn/conditional-keystroke-timing）。
+本项目采用[署名许可协议](./LICENSE)：可自由使用（含商业用途），**无需作者同意**；用于商业用途时须注明作者来源（zhanghaozhecn，仓库：https://github.com/zhanghaozhecn/better-keystroke-timing）。
