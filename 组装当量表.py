@@ -9,7 +9,7 @@
         L4i1=4键第1段 / L4i2=4键第2段 / L4i3=4键第3段 (2026-10-07 展示名; 旧称 角点/首段/短尾/中段/长尾)
         (2026-09-21 段位特征落地: 同一 (p,a,b,n) 签名在 3 键与 4 键码中角色不同, 4-D 单表
          无法表达 → 拆片。旧版单表 F(31,30,30,31) version 2)
-    错误率表.npz        **同构 6 段角色片** P_err(角色, 该角色的键) (version 1, 2026-10-10 起)
+    错误率表.npz        **同构 6 段角色片** P_err(角色, 该角色的键) (version 2, 2026-10-11 起部署 XGB)
         r_L2i1[a,b] / r_L3i1·r_L4i1[a,b,n] / r_L3i2·r_L4i3[p,a,b] / r_L4i2[p,a,b,n]
         —— 索引键序与时间表相同 ⇒ 两表逐片直接相加, 无需广播。
         取代旧 键对错误率表.txt（900 键对 × 5 段类, 2026-09-19~10-10）：那个视图把 p/n 身份
@@ -60,10 +60,10 @@ assert R["L3i1"].shape == R["L3i2"].shape == R["L4i1"].shape == R["L4i3"].shape 
 assert R["L4i2"].shape == (30, 30, 30, 30)
 print(f"按键时间表: 6 角色片, {sum(v.size for v in R.values()):,} 条 (version {int(z['version'])})")
 
-# ── 错误率表: 同构 6 段角色片 (2026-10-10 起; 取代 900×5 的 键对错误率表.txt) ──
+# ── 错误率表: 同构 6 段角色片 (v2 = 2026-10-11 起部署 XGB; 取代 900×5 的 键对错误率表.txt) ──
 ZE = np.load(PROJ / "错误率表.npz", allow_pickle=False)
-assert tuple(ZE["letters"]) == tuple(L) and int(ZE["version"]) == 1, \
-    "错误率表版本不符 (期望 version 1 = 段角色 6 片 (p,a,b,n) 条件化); 先跑 分析-错误率.py"
+assert tuple(ZE["letters"]) == tuple(L) and int(ZE["version"]) == 2, \
+    "错误率表版本不符 (期望 version 2 = 段角色 6 片, 部署 XGB); 先跑 分析-错误率.py"
 assert list(ZE["roles"]) == [f"r_{k}" for k in ROLE_NAMES]
 E = {k: ZE[f"r_{k}"].astype(np.float64) for k in ROLE_NAMES}
 for k in ROLE_NAMES:

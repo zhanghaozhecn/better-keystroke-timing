@@ -2,6 +2,10 @@
 """
 错误率规律探索 + **(p,a,b,n) 条件逻辑回归**（2026-09-19 重参数化；2026-09-21 去交互项；
 2026-10-07 同指块改「同指 + 同键」；**2026-10-10 改 (p,a,b,n) 条件化 + 按段角色 6 片导出**）。
+**2026-10-11 部署切换：产物 错误率表.npz (v2) = XGB 梯度提升树**（四槽身份独热 122 + 上下文/角色 18
+= 140 列, 300 树·深 3, random_state=0; 依据 实验/实验-错误率树模型.py: 排序 +0.0062 AUC 两批同号、
+折外校准不差、复检触发 = 错误事件 ~1200）—— **19 列逻辑回归降为监控伴模型**（下方系数读数/监控①②
+= 系数审计层, 照常运行, 不再进产物）。
 
 **当前模型（2026-10-10 用户决策「把错误侧也改成 p,a,b,n 格式」；同日晚些落地单键块, 再按用户
 「键特征 / 跨键特征 / 角色」三类重组并删 3 列冗余）**:
@@ -684,20 +688,128 @@ for p_, a_, b_, n_, role in (("", "a", "b", "", 0), ("", "a", "b", "z", 1), ("w"
     print(f"  (p={p_ or '∅'},a={a_},b={b_},n={n_ or '∅'}) {ROLE6_NAME[role]}: 重算 {pf:.6f}  "
           f"片值 {pm:.6f}  ({'✓' if abs(pf - pm) < 1e-6 else '✗'})")
 
+# ═══════════════════ 部署模型: XGB 梯度提升树 (2026-10-11 用户决策部署) ═══════════════════
+# 依据 = 实验/实验-错误率树模型.py（同日）: 排序 +0.0062 AUC（t=+3.23, 两独立种子批同号）,
+# 折外校准不差（L3i2 0.95 vs LR 1.16 —— LR 折外高估短尾 16%）, 产物 T3 成本 +2.9ms 重分配。
+# 增益全部来自键身份: 四槽独热 122 在逻辑回归下因 EPV≈29 过拟合, 树的结构化正则装得下
+# （与时间侧「树吃全身份」同一机制）。**复检触发 = 错误事件 ~1200**（届时按同协议重测 LR/XGB）。
+# 19 列逻辑回归保留为**监控伴模型**（上方系数读数/监控①② = 审计层, 照常运行）, 不再进产物。
+ERR_XGB_PARAMS = dict(n_estimators=300, learning_rate=0.06, max_depth=3, subsample=0.8,
+                      colsample_bytree=0.8, reg_lambda=1.0, tree_method="hist",
+                      eval_metric="logloss", random_state=0, n_jobs=-1, verbosity=0)
+_SLOTS = ((0, 31), (31, 30), (61, 30), (91, 31))
+_OH_EV = np.zeros((N, 122), dtype=np.float32)
+for _i, (_p, _a, _b, _n) in enumerate(zip(P_, A_, B_, Nn_)):
+    for _v, (_off, _w) in zip((KI[_p] if _p else 30, KI[_a], KI[_b], KI[_n] if _n else 30), _SLOTS):
+        _OH_EV[_i, _v + _off] = 1.0
+_X_EV = np.hstack([_OH_EV, X[:, 1:]])
+from xgboost import XGBClassifier
+XGB_ERR = XGBClassifier(**ERR_XGB_PARAMS).fit(_X_EV, Yerr)
+print("\n=== 部署模型: XGB 梯度提升树（身份独热 122 + 上下文 18; 300 树 · 深 3） ===")
+# 折外校准监控（1 种子 × 5 折; 每刷重算 —— 部署模型的诚实 O/E / AUC）
+_oof = np.zeros(N)
+for _tr, _te in StratifiedKFold(5, shuffle=True, random_state=0).split(np.zeros(N), Yerr):
+    _oof[_te] = XGBClassifier(**ERR_XGB_PARAMS).fit(_X_EV[_tr], Yerr[_tr]).predict_proba(_X_EV[_te])[:, 1]
+OOF_AUC = float(roc_auc_score(Yerr, _oof))
+OOF_OE = [float(Yerr[RL == r].sum()) / float(_oof[RL == r].sum()) for r in range(6)]
+print(f"  折外（5 折）: AUC {OOF_AUC:.4f}  O/E = " + " / ".join(f"{v:.2f}" for v in OOF_OE))
+
+
+def _xctx(p_, a_, b_, n_, role):
+    """18 列上下文/角色特征（列序 = X[:,1:]）; 与 perr_ctx 同源: je 特征函数 + 模块标准化常数"""
+    v = []
+    for i in range(3):
+        v.append((FEATS_BB[i](a_, b_) - muB[i]) / sdB[i])
+    v.append((float(COL_TO_FINGER[LETTER_TO_COL[b_]] in (3, 4)) - muI[0]) / sdI[0])
+    for i in range(5):
+        v.append((FEATS_AB[i](a_, b_) - muF[i]) / sdF[i])
+    for i, (nm, f) in enumerate(PF_FUN):
+        v.append((f(p_, a_) - muP[i]) / sdP[i] if p_ else 0.0)
+    for i, (nm, f) in enumerate(NF_FUN):
+        v.append((f(a_, b_, n_) - muN[i]) / sdN[i] if n_ else 0.0)
+    v += list(ROLE_IND[role])
+    return v
+
+
+_ROLE_ENUM = {0: ("a", "b"), 1: ("a", "b", "n"), 2: ("p", "a", "b"),
+              3: ("a", "b", "n"), 4: ("p", "a", "b", "n"), 5: ("p", "a", "b")}
+_rows = []
+for _r, _keys in _ROLE_ENUM.items():
+    for _idx in np.stack([g.ravel() for g in np.meshgrid(*[np.arange(30)] * len(_keys),
+                                                         indexing="ij")], axis=1):
+        _kv = dict(zip(_keys, [LETTERS[i] for i in _idx]))
+        _rows.append((_kv.get("p", ""), _kv["a"], _kv["b"], _kv.get("n", ""), _r))
+_XTB = np.array([_xctx(*r) for r in _rows])
+_OH_TB = np.zeros((len(_rows), 122), dtype=np.float32)
+for _i, (p_, a_, b_, n_, _rr) in enumerate(_rows):
+    for _v, (_off, _w) in zip((KI[p_] if p_ else 30, KI[a_], KI[b_], KI[n_] if n_ else 30), _SLOTS):
+        _OH_TB[_i, _v + _off] = 1.0
+_P_TB = XGB_ERR.predict_proba(np.hstack([_OH_TB, _XTB]))[:, 1]
+E6X, _off = {}, 0
+for _r, _keys in _ROLE_ENUM.items():
+    _n = 30 ** len(_keys)
+    E6X[ROLE6_SLICE[_r]] = _P_TB[_off:_off + _n].reshape(SHAPE6[_r]).astype(np.float32)
+    _off += _n
+
+
+def _feat_by_name(p_, a_, b_, n_, role):
+    """独立验证路径: 按列名组装（镜像 perr_ctx 的 dict 写法, 与 _xctx 的位置写法交叉验证）"""
+    v = {"截距": 1.0}
+    for i, nm in enumerate(NAMES_BB):
+        v[f"键·b/{nm}"] = (FEATS_BB[i](a_, b_) - muB[i]) / sdB[i]
+    v["键·b/食指(b)"] = (float(COL_TO_FINGER[LETTER_TO_COL[b_]] in (3, 4)) - muI[0]) / sdI[0]
+    for i, nm in enumerate(NAMES_AB):
+        v[f"跨键·ab/{nm}"] = (FEATS_AB[i](a_, b_) - muF[i]) / sdF[i]
+    for i, (nm, f) in enumerate(PF_FUN):
+        v[f"跨键·pa/{nm}"] = (f(p_, a_) - muP[i]) / sdP[i] if p_ else 0.0
+    for i, (nm, f) in enumerate(NF_FUN):
+        v[f"跨键·{'bn' if '(b,n)' in nm else 'an'}/{nm}"] = (f(a_, b_, n_) - muN[i]) / sdN[i] if n_ else 0.0
+    nx, ps_, l3 = ROLE_IND[role]
+    v["角色/β 有后键(NX)"], v["角色/δ 段位−1(PS)"], v["角色/λ 3键首段(L3i1)"] = nx, ps_, l3
+    return np.array([v[nm] for nm in COLNAMES[1:]], dtype=np.float64)
+
+
+print("  部署表验证（独立 dict 路径 vs 表值）:")
+for p_, a_, b_, n_, role in (("", "a", "b", "", 0), ("", "a", "b", "z", 1),
+                             ("w", "a", "b", "", 2), ("w", "a", "b", "z", 4)):
+    _idx = tuple(KI[x] for x in (p_, a_, b_, n_) if x)
+    _oh4 = np.zeros((1, 122), dtype=np.float32)
+    for _v, (_off, _w) in zip((KI[p_] if p_ else 30, KI[a_], KI[b_], KI[n_] if n_ else 30), _SLOTS):
+        _oh4[0, _v + _off] = 1.0
+    _pv = float(XGB_ERR.predict_proba(np.hstack([_oh4, _feat_by_name(p_, a_, b_, n_, role)[None, :]]))[0, 1])
+    _pm = float(E6X[ROLE6_SLICE[role]][_idx])
+    print(f"    (p={p_ or '空'},a={a_},b={b_},n={n_ or '空'}) {ROLE6_NAME[role].split()[0]}: "
+          f"独立路径 {_pv:.6f}  表值 {_pm:.6f}  ({'✓' if abs(_pv-_pm) < 1e-6 else '✗'})")
+_dpp = [float(np.abs(E6X[ROLE6_SLICE[r]] - E6[ROLE6_SLICE[r]]).mean()) * 100 for r in range(6)]
+print("  vs 线性伴模型 表 |Δ| 均值 (pp): " + "  ".join(f"{v:.3f}" for v in _dpp))
+_ec = None
+for _l in (_DIR / "产物" / "错误修正时间-实测值.txt").read_text(encoding="utf-8").splitlines():
+    if _l.startswith("cost_ms\t"):
+        _ec = float(_l.split("\t")[1]); break
+
+print("  片均值 P_err: " + "  ".join(f"{ROLE6_NAME[r].split()[0]} {E6X[ROLE6_SLICE[r]].mean()*100:.2f}%"
+      for r in range(6)))
+print(f"  平均错误成本 (×实测 {_ec:.0f}ms): T₂ = {_ec*E6X['r_L2i1'].mean():.2f}ms | "
+      f"T₃ = {_ec*(E6X['r_L3i1']+E6X['r_L3i2']).mean():.2f}ms | "
+      f"T₄ = {_ec*(E6X['r_L4i1']+E6X['r_L4i2']+E6X['r_L4i3']).mean():.2f}ms")
+
 # KJ_ERR_NOEXPORT=1 → 跳过产物写入（实验脚本 importlib 载入本模块时不再顺带重写产物）
 OUT_NPZ = _DIR / "产物" / "错误率表.npz"
 if os.environ.get("KJ_ERR_NOEXPORT", "0") == "1":
     print("\n  [KJ_ERR_NOEXPORT=1] 跳过 产物/错误率表.npz 写入")
 else:
     (_DIR / "产物").mkdir(exist_ok=True)
-    np.savez_compressed(OUT_NPZ, **E6, letters=np.array(list(LETTERS)), empty=np.int64(30),
-                        version=np.int64(1), roles=np.array(ROLE6_SLICE),
+    np.savez_compressed(OUT_NPZ, **E6X, letters=np.array(list(LETTERS)), empty=np.int64(30),
+                        version=np.int64(2), roles=np.array(ROLE6_SLICE),
                         note=np.array("P_err 按段角色 6 片, (p,a,b,n) 条件化; 索引键序 = 该角色实际用到的键 "
                                       "(L2i1[a,b] L3i1[a,b,n] L3i2[p,a,b] L4i1[a,b,n] L4i2[p,a,b,n] "
                                       "L4i3[p,a,b]); 与 按键时间表.npz 同构可逐片相加 (2026-10-10 起"
-                                      "取代 键对错误率表.txt 的 900×5 边缘视图); 模型含 单键块"
-                                      "「食指(b)」1 列 (2026-10-10 落地)"))
-    print(f"\n  已导出 {OUT_NPZ.name}  ({sum(v.size for v in E6.values()):,} 条, version 1)")
+                                      "取代 键对错误率表.txt 的 900×5 边缘视图); "
+                                      "v2 (2026-10-11): 部署模型 = XGB 梯度提升树 (四槽身份独热 122 + 上下文 18, "
+                                      "300 树·深3, random_state=0; 依据 实验/实验-错误率树模型.py), "
+                                      "19 列逻辑回归降为监控伴模型; 复检触发 = 错误事件 ~1200"))
+    print(f"\n  已导出 {OUT_NPZ.name}  ({sum(v.size for v in E6X.values()):,} 条, version 2, 部署 XGB)")
+E6 = E6X   # 部署 rebind: 本模块下游（成图等）读到的 E6 = 部署 XGB 表
 print("  角色片均值 P_err: " + "  ".join(f"{ROLE6_NAME[r].split()[0]} {E6[ROLE6_SLICE[r]].mean()*100:.2f}%"
                                         for r in range(6)))
 try:
