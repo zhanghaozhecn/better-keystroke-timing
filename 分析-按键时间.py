@@ -592,18 +592,54 @@ def _block_boundary(tots, block, band, ref_last, smooth):
     return k, R, nb
 
 
-# 稳定期带宽（**按码长**；口径单一来源 —— 2026-10-11 用户决策「2 键的相对离散更大, 直接取 1.15 合理」）:
-#   带宽要配的是「块中位的相对噪声 σ_b/水平」（只在平台段内测, 去练习段污染）:
-#     4 键 3.3% / 3 键 5.1% / 2 键 4.6% ⇒ 同一个 10% 在三档上分别是 3.04σ / 1.97σ / 2.20σ。
-#   2 键平台块中位实测跨度 58.0–70.9ms（SD 3.69）, 而 1.10 的上沿 61.9×1.10 = 68.1ms 落在
-#   平台自身噪声分布**内部**（1.67 SD）⇒ 某一块偶然落在平台高侧就被判「仍在练习」,
-#   稳定池被压到 952/2752（7/19 块, 命中率 34.6%, 留出 190, T₂ 偏差 SE 1.94ms）。
-#   1.15 的上沿 71.2ms 清过整个平台跨度 ⇒ 边界回块[0]、稳定池 2752、留出 550、SE →1.14ms。
-#   该值 = 「噪声归一化」band = 1+3σ_b/水平 的 2 键解（该式对 4 键给出 1.100 = 现行值、
-#   对 3 键 1.153）；**只放宽 2 键**，因为 3 键前 7 块中位 213–226ms vs R=193 是它 09-19
-#   补采时的**真练习段**（不是噪声）, 放宽会把练习段拉进训练池、破坏 T₃ 稳定期语义。
-#   证据: 实验/实验-2键充分性.py（边界敏感度/趋势/σ_b 表）。
-BAND_BY_LEN = {4: 1.10, 3: 1.10, 2: 1.15}
+# 稳定期边界判据（**与水平解耦，2026-10-11 用户决策「稳定期边界改用与水平解耦的判据（3 种码长分别判断）」**）:
+#   新判据 = **平台中心包络**: 上沿 = median(平台平滑值) + NSIG·1.4826·MAD(平台平滑值)，
+#   平台从种子边界迭代至不动点（_block_boundary_envelope），三码长各自独立测 σ_b。
+#   与旧相对带「平滑值 ≤ R×band」的区别: 上沿锚定**平台自身分布中心**而非 R（快端统计量）
+#   —— R 随水平下降而下降、R×band 上沿跟着下降，早期平台块会被重新判成练习段（2026-10-11
+#   下午刷实测: 2 键 R 62→60 使 1.15 上沿重回平台内，边界块[0]→块[12] 回摆，监控①应验）。
+#   包络判据下上沿只随平台中心移动: 平台没变边界就不变（实测三码长 1-2 轮收敛、边界余量
+#   4键 2.4 / 3键 8.0 / 2键 8.5ms；变体对比与迭代轨迹见 `实验/_解耦边界判据-输出.txt`，脚本按一次性决策惯例已删）。
+#   语义约束（继承自既有决策，变体筛选时全部满足）: ① 2 键早期平台（58~71ms，无趋势）
+#   整段入池且对 R 漂移稳健；② 3 键 09-19 补采期真练习段（块 0-6）留池外 —— σ_b 必须在
+#   **平滑值**上测（原始块中位的 MAD 被平台自身 ±20ms 散布抬高，会把练习段放进来）；
+#   ③ 4 键边界基本不动（块[41]，仅 +1 块）。
+#   BAND_BY_LEN 降级为**种子带宽**（包络迭代的起点；`band=` 传参时整体回退旧相对带口径，
+#   供对照/复现 2026-10-11 下午前的快照）。
+BAND_BY_LEN = {4: 1.10, 3: 1.10, 2: 1.15}   # 种子带宽（新判据下只作迭代起点/对照口径）
+NSIG = 3.0                                   # 包络宽度（平台中心 +3σ_b）
+
+
+def _block_boundary_envelope(tots, block, ref_last, smooth, seed_band, nsig=NSIG, max_iter=10):
+    """平台中心包络边界（与水平解耦）: 块中位 → smooth 滚动中位 → 从种子边界（相对带）
+    迭代: c = median(平台平滑值), σ_b = 1.4826·MAD(平台平滑值), 上沿 = c + nsig·σ_b,
+    新边界 = 自末向前最早连续 ≤上沿 的块, 至不动点（实测 1-2 轮收敛）。
+    返回 (k, R, nb, c, sig, edge)；nb<2 时 (None,None,nb,None,None,None)。"""
+    nb = -(-len(tots) // block)
+    if nb < 2:
+        return None, None, nb, None, None, None
+    med = np.array([np.median(tots[b * block:(b + 1) * block]) for b in range(nb)])
+    sm = np.array([np.median(med[max(0, i - smooth + 1):i + 1]) for i in range(nb)])
+    R = float(np.median(sm[-ref_last:]))
+    k0, _, _ = _block_boundary(tots, block, seed_band, ref_last, smooth)
+    if k0 is None or k0 >= nb:                       # 退化（数据不足/末块超带）: 沿用种子结果
+        return k0, R, nb, None, None, None
+    k = k0
+    c = sig = edge = None
+    for _ in range(max_iter):
+        plat = sm[k:]
+        c = float(np.median(plat))
+        sig = float(1.4826 * np.median(np.abs(plat - c)))
+        if sig <= 0:                                 # 平台全等值 (理论罕见): 退回 SD
+            sig = float(np.std(plat, ddof=1)) or 1.0
+        edge = c + nsig * sig
+        kn = nb
+        while kn - 1 >= 0 and sm[kn - 1] <= edge:
+            kn -= 1
+        if kn == k:
+            break
+        k = kn
+    return k, R, nb, c, sig, edge
 
 
 def stable_pools(path, block=150, band=None, ref_last=5, smooth=3, min_blocks=8):
@@ -612,7 +648,7 @@ def stable_pools(path, block=150, band=None, ref_last=5, smooth=3, min_blocks=8)
     分别计算各自截取; 旧"4键边界+同截归属"对 2键恰巧等价——2键入队晚于 4键边界且自身无
     趋势, 其边界自然回溯至块 0 → train4/train2/test4/test2 内容与旧版逐位一致, 已验证)。
     每码长 (4键 d_d / 2键 b_d / 3键 c_d): ok trial 按时间序切 block 等大块 → 块中位 →
-    smooth 滚动中位 → R=末 ref_last 中位 → 自末向前最早连续 ≤R×band 的块起。
+    smooth 滚动中位 → 边界判据（默认**平台中心包络**, 与水平解耦）。
     稳定块数 < min_blocks 的码长照常截取并告警 (如积累中的 3 键: 边界随数据自动收紧)。
     划分: 各码长稳定期分别 RandomState(2024) 顺序 permutation 80/20 (先 4 后 2 后 3,
     固定顺序 → 4/2 键随机流与旧版一致)。返回 dict:
@@ -620,30 +656,41 @@ def stable_pools(path, block=150, band=None, ref_last=5, smooth=3, min_blocks=8)
                  3 键入训 — L==3 特征只在 3 键样本上可辨识, 且这正是 T₃ 偏差的修法)
       train4/test4/train2/test2/train3/test3  各码长 train/test (test3 现为 T₃ 留出指标)
       deploy4/deploy2/deploy3  各码长稳定期全量 (部署 = 当前状态语义)
-      desc  划分说明 (含各码长边界/R/带宽容/告警)
+      desc  划分说明 (含各码长边界/R/σ_b/上沿/告警)
     依据: 角点 S(∅,a,b,∅) 原为零样本外推 (实测偏差 −6.0±0.8ms), 2 键参与训练使其
     内插化; 模型结构共享使稀疏覆盖 (n=1) 也被整体统计强度正则化。
 
-    **2026-10-11 用户决策：带宽改为按码长（BAND_BY_LEN），2 键单独取 1.15**。理由 = 带宽该配
-    的是「块中位的相对噪声 σ_b/水平」（只在平台段内测, 去练习段污染）: 4 键 3.3% / 3 键 5.1% /
-    2 键 4.6% ⇒ 同一个 10% 带宽在三档上分别是 3.04σ / 1.97σ / **2.20σ**。2 键平台块中位实测
-    跨度 58.0–70.9ms（SD 3.69），而 1.10 的上沿 61.9×1.10 = 68.1ms **落在平台自身噪声分布
-    内部（1.67 SD）** ⇒ 只要某一块偶然落在平台高侧就被判「仍在练习」，稳定池被压到 952/2752
-    （7/19 块、命中率 34.6%、留出仅 190、T₂ 偏差 SE 1.94ms）。1.15 的上沿 71.2ms 清过整个
-    平台跨度 ⇒ 边界回块[0]、稳定池 2752、留出 550、SE →1.14ms（零采集）。该取值等价于
-    "噪声归一化" band = 1+3σ_b/水平 的 2 键解（该式对 4 键给出 1.100 = 现行值、3 键 1.153）。
-    **只放宽 2 键**：3 键前 7 块中位 213–226ms vs R=193 是它 09-19 补采时的**真练习段**（不是
-    噪声），放宽会把练习段拉进训练池、破坏 T₃ 稳定期语义（T₃ 是当前唯一欠账指标）。
-    传标量 `band=` 则三码长同值（供对照/复现旧口径）。"""
+    **边界判据沿革**：
+    - 2026-09-19~10-11 早: 相对带「平滑值 ≤ R×band」，带宽按码长 BAND_BY_LEN
+      （2026-10-11 早用户决策 2 键单独 1.15——当时依据 = 带宽该配块中位相对噪声
+      σ_b/水平 4键 3.3%/3键 5.1%/2键 4.6%，1.15 = 「1+3σ_b/水平」的 2 键解）。
+    - **2026-10-11 用户决策「稳定期边界改用与水平解耦的判据（3 种码长分别判断）」→
+      平台中心包络**（现行默认）: 上沿 = median(平台平滑值) + 3·1.4826·MAD(平台平滑值)，
+      从相对带种子边界迭代至不动点。动机 = 相对带的上沿 R×band 是绝对水平的函数，
+      R 随水平下降而下降 ⇒ 早期平台块被重新判成练习段（实测 2 键 R 62→60 后边界
+      块[0]→块[12] 回摆）；包络上沿锚定平台自身分布中心，平台没变边界就不变。
+      落地读数（74 session）: 4键 块[42]→[41]（+1 块）、3键 块[7] 不变（余量 ~0→8.0ms，
+      旧 1.10 相对带本来就压在练习段刀刃上）、2键 块[12]→[0]（回摆修复，余量 8.5ms）。
+      变体筛选（R+k·σ 绝对带 / 平滑 vs 原始尺度 / nsig 2~3）与收敛轨迹存档:
+      `实验/_解耦边界判据-输出.txt`（脚本按一次性决策惯例已删）。
+    传 `band=`（标量或 dict）则**回退旧相对带口径**（供对照/复现旧快照）。"""
+    legacy = band is not None
     bands = BAND_BY_LEN if band is None else ({n: band for n in (4, 2, 3)}
                                               if not isinstance(band, dict) else band)
     rows = load_trials(path)
     idx_n = {n: [i for i, (c, _) in enumerate(rows) if len(c) == n] for n in (4, 2, 3)}
     tcol = {4: 2, 2: 0, 3: 1}          # 4键 d_d / 2键 b_d / 3键 c_d
-    bounds, Rs, nbs = {}, {}, {}
+    bounds, Rs, nbs, sigs, edges = {}, {}, {}, {}, {}
     for n in (4, 2, 3):
-        bounds[n], Rs[n], nbs[n] = _block_boundary(
-            [rows[i][1][tcol[n]] for i in idx_n[n]], block, bands[n], ref_last, smooth)
+        tots_n = [rows[i][1][tcol[n]] for i in idx_n[n]]
+        if legacy:
+            k, R, nb = _block_boundary(tots_n, block, bands[n], ref_last, smooth)
+            sigs[n] = edges[n] = None
+        else:
+            k, R, nb, c, sig, edge = _block_boundary_envelope(
+                tots_n, block, ref_last, smooth, BAND_BY_LEN[n])
+            sigs[n], edges[n] = sig, edge
+        bounds[n], Rs[n], nbs[n] = k, R, nb
     stable, warn = {}, []
     for n in (4, 2, 3):
         k, R, nb = bounds[n], Rs[n], nbs[n]
@@ -673,10 +720,12 @@ def stable_pools(path, block=150, band=None, ref_last=5, smooth=3, min_blocks=8)
         if k >= nb:
             return f"{n}键 末块超带 稳定期空"
         tag = f"({nb - k}/{nb} 块)" if nb - k < min_blocks else ("(全程)" if k == 0 else "")
-        return (f"{n}键 块[{k}] (ok行 #{idx_n[n][k * block] + 1}){tag} R={R:.0f} "
-                f"band={bands[n]:.2f}")
+        tail = (f"σ_b={sigs[n]:.1f} 上沿={edges[n]:.0f}(包络)" if not legacy and sigs[n] is not None
+                else f"band={bands[n]:.2f}")
+        return (f"{n}键 块[{k}] (ok行 #{idx_n[n][k * block] + 1}){tag} R={R:.0f} {tail}")
 
-    desc = (f"稳定期(分码长): {' | '.join(bd_txt(n) for n in (4, 2, 3))}  "
+    mode = "包络判据" if not legacy else "相对带(对照)"
+    desc = (f"稳定期(分码长, {mode}): {' | '.join(bd_txt(n) for n in (4, 2, 3))}  "
             f"(4键 {len(stable[4])} + 3键 {len(stable[3])} + 2键 {len(stable[2])} trial"
             + (f"; ⚠ {'; '.join(warn)}" if warn else "") + ")")
     return {"train_all": out["train4"] + out["train3"] + out["train2"], "desc": desc, **out}
