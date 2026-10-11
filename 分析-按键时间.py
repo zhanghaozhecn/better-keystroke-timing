@@ -44,7 +44,10 @@ d=20 下列序效应 **+0.087±0.078（批A, 变好 1/5）/ +0.026±0.067（批B
   存在(p)/存在(n)/码长×2/段位==3 5（= 原 φ8 + φsuc7 + 角色块 + 几何块 的重排, 数值逐位不变）;
   n=∅ 时后键部分全 0 (存在位=0)。
 部署形态 (v3, 2026-09-02, 用户确认采纳): BlendModel = 0.3×XGBoost(独热122+φ35)
-  + 0.7×(deep2 × 固定种子 0-4 平均) — 无 best-of 选优 → 无选优抽签噪声 (决策带
+  + 0.7×(deep2 × 固定种子平均) — **成员集合分两侧 (2026-10-12 用户决策「生产部署成员数
+  改成 30」)**: 报表/评估 = SEEDS 0-4 (历史读数可比), 部署/产物 = DEPLOY_SEEDS 0-29
+  (压产物点值的种子抽签; 只改部署侧 ⇒ 不动任何报表指标, 见 DEPLOY_SEEDS 处注释);
+  无 best-of 选优 → 无选优抽签噪声 (决策带
   从 ±3 缩至仅测试重洗 ~±1ms); 依据 实验-架构对比3.py (09-14 当前数据重跑):
   原始口径 总 41.6 / R²+0.592 / 段 25.8 / 角点 16.0 (对单模 base 44.0 −2.4, 对 ens5 −0.6)。
 
@@ -57,7 +60,7 @@ d=20 下列序效应 **+0.087±0.078（批A, 变好 1/5）/ +0.026±0.067（批B
 导出 (2026-09-05 起入 产物/): 按键时间表.npz — 2026-09-21 起按段角色 **6 片** (version 3;
   旧版单表 F(31,30,30,31) 无法表达同签名跨码长的角色分裂, 与错误侧 09-19 段类重参数化同因),
   附 letters/empty/roles/version 元数据; 组装当量表.py 查表组合 (段当量 = 按键时间 + 错误率×错误修正时间)。
-  模型: 按键时间模型-神经.pt (deep2×5 权重) + 按键时间模型-xgb.json (XGB 分量)。
+  模型: 按键时间模型-神经.pt (deep2×30 权重, 2026-10-12 起) + 按键时间模型-xgb.json (XGB 分量)。
 README 实证数字 (2026-09-18 起随 --full 输出, readme_evidence): §5.4 类型×前键 / 键对难度 /
   模型视角 / 排序扭曲 / §6.1 rollover — 原 实验-README数字刷新.py 并入删除 (同 §5.3 内嵌演进);
   §5.5 签名vs类盲随 分析-错误率.py 输出。
@@ -349,7 +352,8 @@ class KeystrokeModel(_SegModel):
     （余差归因: 旧删法改了初始化流 + φ/口径代际）。详见 README §4.4 ⑩⑪。
     v3 (2026-09-02): MLP 64→32→1 两隐藏层 (deep2), 依据 实验-架构对比.py 稳定期重审 —
     加一层对 base 10/10 配对 −2.2~−2.5ms, v1"单层最优"为混合数据伪收敛 (实验-架构对比)。
-    部署形态 = BlendModel (本类×5 固定种子平均 + XGB 0.3 混合, 见下方混合段)。
+    部署形态 = BlendModel (本类 × 固定种子平均 + XGB 0.3 混合; 报表 5 种子 / 部署 30 种子,
+    2026-10-12 起, 见下方混合段与 DEPLOY_SEEDS)。
     v2 (2026-08-29): 增后键条件 — n 仅经 φsuc 特征进入 (几何身份≈嵌入身份);
     依据 实验-后键条件系列(已删, 结论存档): 对称化总MAE −1.3~−1.6。
     **e_n 入 MLP 的复测 (2026-10-10)**: 当时的 φ36 架构 + 2.7× 数据 + 无选优协议下三臂受控
@@ -405,6 +409,14 @@ class CPModel(_SegModel):
 # ═══════════════════ 混合部署模型 (v3, 2026-09-02) ═══════════════════
 
 W_XGB = 0.3   # 混合权重: 0.3×XGB + 0.7×(deep2 五种子平均) — 实验-架构对比2.py 双批定标
+# 部署成员数 vs 报表成员数 (2026-10-12 用户决策「生产部署成员数改成 30」):
+#   部署(产物)侧 = 30 个种子; 报表(评估)侧 = 沿用固定 5 个 (BlendModel.SEEDS), **不含** 30 个成员。
+#   分离的唯一动机 = 产物是**点值**(下游直读), 其"种子抽签"是可复现性成本: 逐格跨成员 σ_cell 观测加权
+#   5.99ms (两批 5.99/6.04), 单条 T₄ 查询 5 成员间 SD 12.21ms = T₄ mean 的 3.5% ⇒ k=5 的抽签偏离
+#   5.5ms → k=30 约 2.2ms (混合 0.7 稀释后 3.8→1.5ms); 依据与两批读数见 README §4.4 ⑲①
+#   (实验/实验-产物误差削减.py)。报表读数对成员数不敏感 (5→15 只 0.042ms, ⑱ 的 NN15) ⇒ 报表维持 5
+#   可保住全部历史读数可比性, **本次变更不动任何报表指标、不构成口径变更**。
+DEPLOY_SEEDS = tuple(range(30))
 XGB_PARAMS = dict(n_estimators=500, learning_rate=0.06, max_depth=6,
                   subsample=0.8, colsample_bytree=0.8, tree_method="hist",
                   random_state=0, n_jobs=-1, verbosity=0)
@@ -432,14 +444,25 @@ def train_xgb(prev, a, b, nxt, ph, tgt):
     return XGBRegressor(**XGB_PARAMS).fit(X, tgt)
 
 class BlendModel:
-    """v3 混合部署模型: W×XGB + (1-W)×(KeystrokeModel deep2 × 固定 5 种子平均)。
-    无 best-of 选优 (固定种子 0-4 全体平均) → 无选优抽签噪声, 同数据逐位确定。
+    """v3 混合部署模型: W×XGB + (1-W)×(KeystrokeModel deep2 × 固定种子平均)。
+    无 best-of 选优 (固定种子全体平均) → 无选优抽签噪声, 同数据逐位确定。
     依据 实验-架构对比3.py (09-14 当前数据重跑): 总 41.6 / R²+0.592 / 段 25.8 / 角点 16.0
     (原始口径), 对 ens5 单独 −0.6ms, 对单模 base 44.0 −2.4ms。
+    **成员集合由实例属性 `seeds` 决定 (2026-10-12)**: 报表/评估模型 = `SEEDS` (固定 0-4, 历史可比);
+    部署/产物模型 = `DEPLOY_SEEDS` (0-29, 压产物点值的种子抽签, 见其定义处注释与 README §4.4 ⑲①)。
     接口与 _SegModel 鸭子类型兼容 (seg/total/_batch/nparam)。"""
     SEEDS = (0, 1, 2, 3, 4)
-    def __init__(self, xgb_fit, members):
+    def __init__(self, xgb_fit, members, seeds=None):
         self.xgb, self.members = xgb_fit, members
+        if seeds is None:
+            # 未显式给种子集合 (旧权重文件) ⇒ 按成员数合成占位 (只影响 save 写回的 seeds, 不影响预测)
+            self.seeds = (tuple(self.SEEDS) if len(members) == len(self.SEEDS)
+                          else tuple(range(len(members))))
+        else:
+            self.seeds = tuple(seeds)
+            # 显式传 seeds 时成员数必须一致 (不一致 = 调用方漏传, 如部署侧忘了 DEPLOY_SEEDS)
+            assert len(self.members) == len(self.seeds), \
+                f"成员数 {len(self.members)} ≠ 种子数 {len(self.seeds)} (部署侧请传 seeds=DEPLOY_SEEDS)"
     @classmethod
     def fit(cls, prev, a, b, nxt, ph, tgt):
         xgb_fit = train_xgb(prev, a, b, nxt, ph, tgt)
@@ -475,7 +498,7 @@ class BlendModel:
     def nparam(self): return sum(m.nparam() for m in self.members)
     def eval(self): return self   # 兼容 eval_seg 的 model.eval() (成员常驻 eval 态)
     def save(self, path_pt, path_xgb):
-        torch.save({"seeds": list(self.SEEDS),
+        torch.save({"seeds": list(self.seeds),
                     "members": [m.state_dict() for m in self.members]}, path_pt)
         bst = self.xgb.get_booster()
         bst.set_attr(dm=str(DM_OH_COLS), phi=str(D_PHI), ord=PHI_ORDER_TAG)   # 设计矩阵指纹 (load 时校验)
@@ -501,7 +524,7 @@ class BlendModel:
                 f"dm/phi 指纹拦不住旧序权重 ⇒ 用 ord 显式拒绝; 用 分析-按键时间.py --full 重生)")
         class _BstWrap:   # 与 sklearn 拟合对象同形 (predict(ndarray))
             def predict(self, X): return bst.inplace_predict(np.ascontiguousarray(X, dtype=np.float32))
-        return cls(_BstWrap(), members)
+        return cls(_BstWrap(), members, seeds=ck.get("seeds"))
 
 # ═══════════════════ 数据 ═══════════════════
 
@@ -1414,7 +1437,9 @@ def main():
 
     # ── 部署模型: 稳定期全量 B4b + v3 混合 (当量表条目质量优先; 评估指标以上方为准;
     #    2026-08-30 起部署池=稳定期, 08-31 起含 2 键角点全量 — 角点条目内插化;
-    #    2026-09-02 起部署形态=XGB+deep2×5 混合, 固定种子无选优) ──
+    #    2026-09-02 起部署形态=XGB+deep2 混合, 固定种子无选优;
+    #    **2026-10-12 用户决策「生产部署成员数改成 30」: 部署侧成员 = DEPLOY_SEEDS (0-29),
+    #    报表侧仍 SEEDS (0-4) —— 只压产物点值的种子抽签, 不动任何报表读数, 见 DEPLOY_SEEDS 处注释**) ──
     print(f"\n=== 部署模型 (稳定期全量训练, v3 混合 — 导出用, 指标见上方评估模型) ===")
     deploy_all = pools["deploy4"] + pools["deploy3"] + pools["deploy2"]
     dprev, da, db, dn, dph, dtgt = build_tensors(deploy_all)
@@ -1422,15 +1447,19 @@ def main():
     print(f"全数据 B4b: 保留 {int(dkeep.sum())}/{len(dtgt)} 段  (稳定期全量, 4键+3键+2键角点)")
     ev_arrays = (dprev, da, db, dn, dph, dtgt, dkeep)   # README 实证块复用 (未过滤布局 + 掩码)
     dprev, da, db, dn, dph, dtgt = dprev[dkeep], da[dkeep], db[dkeep], dn[dkeep], dph[dkeep], dtgt[dkeep]
-    douts = train_members([(s, dprev, da, db, dn, dph, dtgt) for s in BlendModel.SEEDS])
-    for s, (_, seg_mae, va_mae) in zip(BlendModel.SEEDS, douts):
+    print(f"  部署成员 = {len(DEPLOY_SEEDS)} 个固定种子 {DEPLOY_SEEDS[0]}~{DEPLOY_SEEDS[-1]}: "
+          f"产物点值的「种子抽签」随成员数下降 (k=5→30 单条 T₄ 偏离 5.5→2.2ms; README §4.4 ⑲①)")
+    douts = train_members([(s, dprev, da, db, dn, dph, dtgt) for s in DEPLOY_SEEDS])
+    for s, (_, seg_mae, va_mae) in zip(DEPLOY_SEEDS, douts):
         print(f"  seed {s}: 段MAE={seg_mae:5.1f}ms  验证段MAE={va_mae:5.1f}ms")
-    deploy_m = BlendModel(train_xgb(dprev, da, db, dn, dph, dtgt), [m for m, _, _ in douts])
+    deploy_m = BlendModel(train_xgb(dprev, da, db, dn, dph, dtgt), [m for m, _, _ in douts],
+                          seeds=DEPLOY_SEEDS)
 
     print("\n=== 导出 ===")
     ART_DIR.mkdir(exist_ok=True)
     deploy_m.save(str(MODEL_PT), str(MODEL_XGB))
-    print(f"  模型 → 产物/按键时间模型-神经.pt (deep2×5 权重) + 产物/按键时间模型-xgb.json (XGB 分量; φ 宽度/角色块变更后与旧权重不兼容)")
+    print(f"  模型 → 产物/按键时间模型-神经.pt (deep2×{len(DEPLOY_SEEDS)} 权重) + "
+          f"产物/按键时间模型-xgb.json (XGB 分量; φ 宽度/角色块变更后与旧权重不兼容)")
     T = build_seg_table(deploy_m)
     export_seg_table(deploy_m, str(SEG_NPZ), T)
     readme_evidence(deploy_all, *ev_arrays, T)
