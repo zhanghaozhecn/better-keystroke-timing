@@ -6,23 +6,23 @@
       (同源项目的复现与三层修法见 `../并击击键当量/README.md` §4.1 与
        `../并击击键当量/实验/实验-IME按键捕获.py` —— 真实注入按键的实测。)
 
-本模块 = 通用做法 (SDL / Chromium / Wine 都用 `ImmAssociateContext`; `ImmDisableIME` 是 MSDN 的
-进程级方案):
-  ③ `ime_disable_process()`: `ImmDisableIME(0)` —— **进程级**禁用 IME。
-     MSDN 硬约束: 必须在**第一个顶层窗口收到 WM_CREATE 之前**调用 ⇒ 建 `tk.Tk()` 之前调;
-     失败 (返回 False) 无害 —— ② 仍在。成功 ⇒ 本进程不加载输入法, 键直接到窗口。
-  ② `ImeGuard(root)`: `ImmAssociateContext(hwnd, NULL)` —— 摘掉**本窗口**的输入上下文;
-     窗口每次激活与每 2 s 重摘一次 (系统会在激活/切换输入法后重新关联)。
-     注: tkinter 自带 IME 支持 (建窗/获焦时自己挂上下文) ⇒ ② 与 ③ 互补, 两个都要。
+本模块 = **窗口级摘除** `ImmAssociateContext(hwnd, NULL)` —— 摘掉**本窗口**的输入上下文
+  (SDL / Chromium / Wine 的通用做法):
+  `ImeGuard(root)`: 建窗后调一次; 窗口每次激活 (<FocusIn>) 与每 2 s 重摘一次。
+  为什么要重摘: 系统会在激活/切换输入法后重新关联, tkinter 自带 IME 支持也会在建窗/获焦时
+  自己挂上下文 ⇒ 一次摘除不够, 必须周期性补摘。
 
-用法 (采集脚本里各 3 行):
-    from 采集输入层 import ime_disable_process, ImeGuard
-    ime_disable_process()          # 建窗前
+**2026-10-12 用户决策「禁用 IME 的方法只保留摘除窗口 IME」**: 去掉原先并用的进程级
+  `ImmDisableIME(0)` (须在第一个顶层窗口收到 WM_CREATE 之前调用, MSDN 硬约束) ⇒ 本模块只剩
+  这一个入口, 也不再有任何"必须在建窗之前调用"的时序约束。
+
+用法 (采集脚本里各 2 行):
+    from 采集输入层 import ImeGuard
     ...  self.root = tk.Tk()  ...
     self.ime_guard = ImeGuard(self.root)     # 建窗后; 退出时 .stop()
 
 不做的事: 本模块**不装低层键盘钩子** (并击项目那层是为"IME 连键都看不到"的额外保证);
-  实测 ②+③ 已足够让中文态下的字母以干净 `char` 到达 tkinter ⇒ 串击保持脚本简单、无全局钩子。
+  窗口级摘除已足够让中文态下的字母以干净 `char` 到达 tkinter ⇒ 串击保持脚本简单、无全局钩子。
 """
 import sys
 
@@ -38,15 +38,9 @@ if IS_WINDOWS:
     _GA_ROOT = 2
     _user32.GetAncestor.restype = ctypes.c_void_p
     _user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    _user32.GetFocus.restype = ctypes.c_void_p          # 默认 c_int 会截断 64 位句柄
     _imm32.ImmAssociateContext.restype = ctypes.c_void_p
     _imm32.ImmAssociateContext.argtypes = [wintypes.HWND, ctypes.c_void_p]
-    _imm32.ImmDisableIME.restype = wintypes.BOOL
-    _imm32.ImmDisableIME.argtypes = [wintypes.DWORD]
-
-    def ime_disable_process():
-        """进程级禁用 IME (`ImmDisableIME(0)`); 必须在建第一个顶层窗口**之前**调用 (MSDN)。
-        返回 True/False (失败无害 —— ImeGuard 仍在)。"""
-        return bool(_imm32.ImmDisableIME(0))
 
     def tk_toplevel(root):
         """tkinter 顶层窗口句柄 (winfo_id() 在 Windows 上返回内部子窗口; 顶层要 GA_ROOT)"""
@@ -61,7 +55,7 @@ if IS_WINDOWS:
         return n
 
     class ImeGuard:
-        """窗口级 IME 摘除 (②): 建窗后调一次; 激活时与每 interval_ms 重摘一次"""
+        """窗口级 IME 摘除: 建窗后调一次; 激活时与每 interval_ms 重摘一次"""
 
         def __init__(self, root, interval_ms=2000):
             self.root, self.interval_ms = root, interval_ms
@@ -85,12 +79,9 @@ if IS_WINDOWS:
 
     def status():
         """给采集脚本打印的一行状态"""
-        return "输入法: 进程级 ImmDisableIME(0) 已调用 (见返回值) + 窗口级摘除已启用"
+        return "输入法: 窗口级摘除已启用 (ImmAssociateContext(hwnd, NULL))"
 
 else:                                   # 非 Windows: 空实现 (IME 是 Windows 特性)
-    def ime_disable_process():
-        return False
-
     def tk_toplevel(root):
         return 0
 
@@ -112,7 +103,6 @@ else:                                   # 非 Windows: 空实现 (IME 是 Window
 if __name__ == "__main__":
     print(f"IS_WINDOWS = {IS_WINDOWS}")
     if IS_WINDOWS:
-        print("ime_disable_process() →", ime_disable_process(), "(需在建窗前调用才为 True)")
         import tkinter as tk
         r = tk.Tk(); r.withdraw()
         g = ImeGuard(r)
